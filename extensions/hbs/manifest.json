@@ -1,0 +1,12 @@
+{
+    "display_name": "HBS - Hierarchical Bucket Summarizer",
+    "loading_order": 50,
+    "requires": [],
+    "optional": [],
+    "generate_interceptor": "hbs_generate_interceptor",
+    "js": "index.js",
+    "css": "style.css",
+    "author": "User",
+    "version": "1.0.0",
+    "homePage": ""
+}
