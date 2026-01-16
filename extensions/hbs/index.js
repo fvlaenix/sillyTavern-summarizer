@@ -1,4 +1,4 @@
-import { getContext, extension_settings, saveSettingsDebounced } from '../../../scripts/extensions.js';
+import { getContext, extension_settings, saveSettingsDebounced } from '../../../../scripts/extensions.js';
 import { eventSource, event_types } from '../../../../script.js';
 import {
     loadHbsState,

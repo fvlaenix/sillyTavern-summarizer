@@ -1,5 +1,5 @@
-import { getContext } from '../../../scripts/extensions.js';
-import { getStringHash } from '../../../scripts/utils.js';
+import { getContext } from '../../../../scripts/extensions.js';
+import { getStringHash } from '../../../../scripts/utils.js';
 
 const DEFAULT_STATE = {
     version: 1,
