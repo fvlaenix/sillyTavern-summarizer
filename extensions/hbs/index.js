@@ -10,6 +10,9 @@ import {
     computeTokenStats,
     resetHbsState,
     checkDirty,
+    countTokensForMessages,
+    getBucketCountsByLevel,
+    rebuildBuckets,
 } from './bucket-manager.js';
 
 const MODULE_NAME = 'hbs';
@@ -19,6 +22,7 @@ const DEFAULT_SETTINGS = {
     defaultKeepLastN: 12,
     defaultMaxSummaryWords: 120,
     injectionTemplate: '[Summary of earlier conversation:]\n{{summary}}',
+    injectionRole: 'system',
     showDebugPanel: true,
 };
 
@@ -77,7 +81,7 @@ async function updateHealthStatus() {
     }
 }
 
-function updateTokenStats(stats) {
+function updateTokenStats(stats, state = null) {
     currentStats = stats;
 
     const elements = {
@@ -90,6 +94,7 @@ function updateTokenStats(stats) {
         live_tokens: document.getElementById('hbs_live_tokens'),
         total_virtual: document.getElementById('hbs_total_virtual'),
         buckets_count: document.getElementById('hbs_buckets_count'),
+        buckets_by_level: document.getElementById('hbs_buckets_by_level'),
     };
 
     if (stats) {
@@ -103,10 +108,20 @@ function updateTokenStats(stats) {
         if (elements.live_tokens) elements.live_tokens.textContent = stats.liveTokens.toLocaleString();
         if (elements.total_virtual) elements.total_virtual.textContent = stats.totalVirtual.toLocaleString();
         if (elements.buckets_count) elements.buckets_count.textContent = stats.bucketsCount;
+
+        if (elements.buckets_by_level && state) {
+            const levelCounts = getBucketCountsByLevel(state);
+            const levelText = Object.keys(levelCounts)
+                .sort((a, b) => parseInt(a) - parseInt(b))
+                .map(level => `L${level}:${levelCounts[level]}`)
+                .join(', ') || 'none';
+            elements.buckets_by_level.textContent = levelText;
+        }
     } else {
         Object.values(elements).forEach(el => {
             if (el) el.textContent = '0';
         });
+        if (elements.buckets_by_level) elements.buckets_by_level.textContent = 'none';
     }
 }
 
@@ -207,7 +222,7 @@ async function forceBuildBuckets() {
             await context.saveMetadata();
 
             const stats = await computeTokenStats(state, uaMessages);
-            updateTokenStats(stats);
+            updateTokenStats(stats, state);
             updateBucketsList(state);
 
             toastr.success('Buckets built successfully');
@@ -241,10 +256,58 @@ async function resetState() {
     saveHbsState(state, context.chatMetadata);
     await context.saveMetadata();
 
-    updateTokenStats(null);
+    updateTokenStats(null, state);
     updateBucketsList(state);
 
     toastr.success('HBS state reset');
+}
+
+async function rebuildState() {
+    const context = getContext();
+    const settings = getSettings();
+
+    if (!context.chat || context.chat.length === 0) {
+        toastr.info('No chat loaded');
+        return;
+    }
+
+    let state = loadHbsState(context.chatMetadata);
+    if (!state) {
+        state = initHbsState(context.chatMetadata, settings);
+    }
+
+    if (!state.enabled) {
+        toastr.warning('HBS is disabled for this chat');
+        return;
+    }
+
+    if (!confirm('Rebuild all buckets from scratch? This will re-summarize the entire chat history.')) {
+        return;
+    }
+
+    const result = await withLock(async () => {
+        try {
+            toastr.info('Rebuilding buckets...');
+
+            const uaMessages = context.chat.filter(isUserAssistant);
+            const chatId = context.chatId || 'unknown';
+
+            await rebuildBuckets(state, uaMessages, chatId);
+
+            saveHbsState(state, context.chatMetadata);
+            await context.saveMetadata();
+
+            const stats = await computeTokenStats(state, uaMessages);
+            updateTokenStats(stats, state);
+            updateBucketsList(state);
+
+            toastr.success('Buckets rebuilt successfully');
+        } catch (error) {
+            console.error('[HBS] Rebuild error:', error);
+            toastr.error(`Failed to rebuild buckets: ${error.message}`);
+            throw error;
+        }
+    });
 }
 
 async function onChatChanged() {
@@ -252,7 +315,7 @@ async function onChatChanged() {
     const settings = getSettings();
 
     if (!context.chat || context.chat.length === 0) {
-        updateTokenStats(null);
+        updateTokenStats(null, null);
         updateBucketsList(null);
         return;
     }
@@ -271,7 +334,7 @@ async function onChatChanged() {
 
     const uaMessages = context.chat.filter(isUserAssistant);
     const stats = await computeTokenStats(state, uaMessages);
-    updateTokenStats(stats);
+    updateTokenStats(stats, state);
     updateBucketsList(state);
 
     const isDirty = checkDirty(state, uaMessages, Math.max(0, uaMessages.length - state.keepLastN));
@@ -305,6 +368,17 @@ async function hbs_generate_interceptor(chat, contextSize, abort, type) {
 
             console.log(`[HBS] Generate interceptor: ${uaMessages.length} UA messages, contextSize=${contextSize}`);
 
+            const historyEnd = Math.max(0, uaMessages.length - state.keepLastN);
+            const liveMessages = uaMessages.slice(historyEnd);
+            const liveTokens = await countTokensForMessages(liveMessages);
+
+            if (liveTokens > contextSize) {
+                toastr.error(`HBS: Live window alone (${liveTokens} tokens) exceeds context (${contextSize}). Reduce keepLastN or shorten recent messages.`);
+                console.error(`[HBS] Live window too large: ${liveTokens} > ${contextSize}`);
+                abort(true);
+                return;
+            }
+
             await ensureBucketsUpToDate(state, uaMessages, chatId);
 
             saveHbsState(state, context.chatMetadata);
@@ -317,11 +391,11 @@ async function hbs_generate_interceptor(chat, contextSize, abort, type) {
             chat.splice(0, chat.length, ...virtualChat);
 
             const stats = await computeTokenStats(state, uaMessages);
-            updateTokenStats(stats);
+            updateTokenStats(stats, state);
             updateBucketsList(state);
 
             if (stats.totalVirtual > contextSize) {
-                toastr.error('HBS: Virtual prompt exceeds context. Reduce keepLastN or message size.');
+                toastr.error(`HBS: Virtual prompt (${stats.totalVirtual} tokens) exceeds context (${contextSize}). Reduce keepLastN or maxSummaryWords.`);
                 abort(true);
             }
         } catch (error) {
@@ -410,6 +484,11 @@ function setupEventListeners() {
         resetButton.addEventListener('click', resetState);
     }
 
+    const rebuildButton = document.getElementById('hbs_rebuild');
+    if (rebuildButton) {
+        rebuildButton.addEventListener('click', rebuildState);
+    }
+
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
 }
 
@@ -451,8 +530,9 @@ function loadSettingsHtml() {
                     </label>
                 </div>
                 <div style="margin-top: 10px;">
-                    <button id="hbs_force_build" class="menu_button">Force Build Buckets</button>
-                    <button id="hbs_reset" class="menu_button">Reset HBS State</button>
+                    <button id="hbs_force_build" class="menu_button">Force Build</button>
+                    <button id="hbs_rebuild" class="menu_button">Rebuild All</button>
+                    <button id="hbs_reset" class="menu_button">Reset State</button>
                 </div>
             </div>
 
@@ -467,6 +547,7 @@ function loadSettingsHtml() {
                     <div>Remainder tokens: <span id="hbs_remainder_tokens">0</span></div>
                     <div>Live tokens: <span id="hbs_live_tokens">0</span></div>
                     <div>Total virtual: <span id="hbs_total_virtual">0</span></div>
+                    <div style="grid-column: 1 / -1;">Buckets by level: <span id="hbs_buckets_by_level">none</span></div>
                 </div>
             </div>
 

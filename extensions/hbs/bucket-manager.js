@@ -139,12 +139,15 @@ export async function performMergeCarry(state, chatId) {
             range: [b1.start, b2.end],
         });
 
+        const context = getContext();
+        const summaryTokens = await context.getTokenCountAsync(result.text, 0);
+
         state.buckets.push({
             level: b1.level + 1,
             start: b1.start,
             end: b2.end,
             summary: result.text,
-            summaryTokens: result.tokens,
+            summaryTokens: summaryTokens,
             createdAt: Date.now(),
         });
 
@@ -170,12 +173,15 @@ export async function ensureBucketsUpToDate(state, uaMessages, chatId) {
             range: [start, end],
         });
 
+        const context = getContext();
+        const summaryTokens = await context.getTokenCountAsync(result.text, 0);
+
         state.buckets.push({
             level: 0,
             start,
             end,
             summary: result.text,
-            summaryTokens: result.tokens,
+            summaryTokens: summaryTokens,
             createdAt: Date.now(),
         });
 
@@ -188,9 +194,32 @@ export async function ensureBucketsUpToDate(state, uaMessages, chatId) {
     state.dirty = false;
 }
 
+export function clampStateToHistoryEnd(state, historyEnd) {
+    if (state.processedUntil <= historyEnd) {
+        return;
+    }
+
+    console.log(`[HBS] History end moved backwards: processedUntil=${state.processedUntil} -> ${historyEnd}`);
+
+    state.buckets = state.buckets.filter(bucket => bucket.end <= historyEnd);
+
+    state.processedUntil = historyEnd;
+
+    if (state.buckets.length > 0) {
+        const lastBucket = state.buckets[state.buckets.length - 1];
+        state.processedUntil = lastBucket.end;
+    } else {
+        state.processedUntil = 0;
+    }
+
+    state.dirty = true;
+}
+
 export function buildVirtualChat(state, uaMessages, extensionSettings) {
     const historyEnd = Math.max(0, uaMessages.length - state.keepLastN);
     const virtual = [];
+
+    clampStateToHistoryEnd(state, historyEnd);
 
     if (state.buckets.length > 0) {
         const sortedBuckets = state.buckets.slice().sort((a, b) => a.start - b.start);
@@ -199,12 +228,16 @@ export function buildVirtualChat(state, uaMessages, extensionSettings) {
         const template = extensionSettings.injectionTemplate || '[Summary of earlier conversation:]\n{{summary}}';
         const injectedText = template.replace('{{summary}}', allSummaries);
 
+        const injectionRole = extensionSettings.injectionRole || 'system';
+        const isSystem = injectionRole === 'system';
+        const isUser = injectionRole === 'user';
+
         virtual.push({
-            role: 'system',
+            role: injectionRole,
             mes: injectedText,
-            is_system: true,
-            is_user: false,
-            name: 'HBS Summary',
+            is_system: isSystem,
+            is_user: isUser,
+            name: isUser ? 'User' : (isSystem ? 'System' : 'HBS Summary'),
         });
     }
 
@@ -273,4 +306,30 @@ export function resetHbsState(state) {
     state.buckets = [];
     state.dirty = false;
     state.fingerprint = '';
+}
+
+export function getBucketCountsByLevel(state) {
+    const counts = {};
+    for (const bucket of state.buckets) {
+        const level = bucket.level;
+        counts[level] = (counts[level] || 0) + 1;
+    }
+    return counts;
+}
+
+export async function rebuildBuckets(state, uaMessages, chatId) {
+    const oldProcessedUntil = state.processedUntil;
+    const oldBuckets = state.buckets.slice();
+
+    resetHbsState(state);
+
+    try {
+        await ensureBucketsUpToDate(state, uaMessages, chatId);
+        console.log(`[HBS] Rebuilt buckets: ${oldBuckets.length} -> ${state.buckets.length}`);
+    } catch (error) {
+        console.error('[HBS] Rebuild failed, restoring old state:', error);
+        state.processedUntil = oldProcessedUntil;
+        state.buckets = oldBuckets;
+        throw error;
+    }
 }
