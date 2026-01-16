@@ -43,6 +43,26 @@ async function dismissOnboarding(page) {
     }
 }
 
+async function dismissIntegrityError(page) {
+    const integrityDialog = page.locator('dialog:has-text("Chat integrity check failed")');
+    const dialogVisible = await integrityDialog
+        .waitFor({ state: 'visible', timeout: 5000 })
+        .then(() => true)
+        .catch(() => false);
+
+    if (dialogVisible) {
+        const input = integrityDialog.locator('input[type="text"], input.popup-input, textarea').first();
+        if (await input.count()) {
+            await input.fill('OVERWRITE');
+        }
+        const okButton = integrityDialog.getByText('OK', { exact: true });
+        if (await okButton.count()) {
+            await okButton.first().click();
+        }
+        await page.waitForLoadState('domcontentloaded');
+    }
+}
+
 async function ensureHbsReady(page, pageErrors) {
     const interceptorReady = await page
         .waitForFunction(() => typeof window.hbs_generate_interceptor === 'function', null, { timeout: 60000 })
@@ -56,21 +76,30 @@ async function ensureHbsReady(page, pageErrors) {
 
 async function openSillyTavern(page, pageErrors) {
     await page.goto('/');
+    await dismissIntegrityError(page);
     await dismissOnboarding(page);
     await ensureHbsReady(page, pageErrors);
 }
 
 async function mockTextGeneration(page, responseText = 'Mock AI reply') {
+    const responseQueue = Array.isArray(responseText) ? responseText.slice() : null;
+    const defaultResponse = Array.isArray(responseText) && responseText.length
+        ? responseText[responseText.length - 1]
+        : responseText;
+
     await page.route('**/api/**/generate', async (route) => {
+        const text = responseQueue && responseQueue.length
+            ? responseQueue.shift()
+            : (defaultResponse || 'Mock AI reply');
         await route.fulfill({
             status: 200,
             contentType: 'application/json',
             body: JSON.stringify({
-                results: [{ text: responseText }],
-                choices: [{ text: responseText, message: { content: responseText } }],
-                output: responseText,
-                text: responseText,
-                content: [{ type: 'text', text: responseText }],
+                results: [{ text }],
+                choices: [{ text, message: { content: text } }],
+                output: text,
+                text,
+                content: [{ type: 'text', text }],
             }),
         });
     });
@@ -79,6 +108,7 @@ async function mockTextGeneration(page, responseText = 'Mock AI reply') {
 async function setupHbsTestContext(page, {
     mainApi = 'kobold',
     summaryText = 'Mock HBS summary',
+    summaryMode = 'firstWord',
     profileId = 'hbs-test-profile',
     base = 2,
     keepLastN = 1,
@@ -99,6 +129,12 @@ async function setupHbsTestContext(page, {
             throw new Error('No characters loaded');
         }
         await context.selectCharacterById(0);
+        if (typeof context.clearChat === 'function') {
+            await context.clearChat();
+        }
+        if (Array.isArray(context.chat)) {
+            context.chat.length = 0;
+        }
 
         context = window.SillyTavern.getContext();
         window.__hbsSummaryCalls = 0;
@@ -112,8 +148,56 @@ async function setupHbsTestContext(page, {
             };
         }
 
-        context.ConnectionManagerRequestService.sendRequest = async () => {
+        const buildFirstWordSummary = (messages) => {
+            if (!Array.isArray(messages)) {
+                return '';
+            }
+            const userMessage = messages.find((message) => message?.role === 'user');
+            const prompt = userMessage?.content || '';
+            const separatorIndex = prompt.indexOf('\n\n');
+            const payload = separatorIndex >= 0 ? prompt.slice(separatorIndex + 2) : prompt;
+
+            const lines = payload.split('\n');
+            const fragments = [];
+            let collectUnprefixed = false;
+
+            for (const rawLine of lines) {
+                const line = rawLine.trim();
+                if (!line || line === '---') {
+                    continue;
+                }
+
+                const match = line.match(/^(U|A|S1|S2):\s*(.*)$/);
+                if (match) {
+                    const tag = match[1];
+                    const rest = match[2];
+                    collectUnprefixed = tag === 'S1' || tag === 'S2';
+                    if (rest) {
+                        fragments.push(rest);
+                    }
+                    continue;
+                }
+
+                if (collectUnprefixed) {
+                    fragments.push(line);
+                }
+            }
+
+            const firstWords = fragments
+                .map((text) => text.trim().split(/\s+/)[0])
+                .filter(Boolean);
+
+            return firstWords.join('\n---\n');
+        };
+
+        context.ConnectionManagerRequestService.sendRequest = async (profileId, messages) => {
             window.__hbsSummaryCalls += 1;
+            if (config.summaryMode === 'firstWord') {
+                const summary = buildFirstWordSummary(messages);
+                if (summary) {
+                    return { content: summary };
+                }
+            }
             return { content: config.summaryText };
         };
 
@@ -144,6 +228,7 @@ async function setupHbsTestContext(page, {
         base,
         keepLastN,
         maxSummaryWords,
+        summaryMode,
     });
 }
 
@@ -175,19 +260,12 @@ async function waitForAiReply(page, text) {
     }, text);
 }
 
-async function getAiReplyCount(page, text) {
-    return page.evaluate((message) => {
+async function waitForAssistantCount(page, minCount) {
+    await page.waitForFunction((expected) => {
         const chat = window.SillyTavern.getContext().chat || [];
-        return chat.filter((msg) => msg && msg.is_user === false && (msg.mes || '').includes(message)).length;
-    }, text);
-}
-
-async function waitForAiReplyCount(page, text, minCount) {
-    await page.waitForFunction((message, expected) => {
-        const chat = window.SillyTavern.getContext().chat || [];
-        const count = chat.filter((msg) => msg && msg.is_user === false && (msg.mes || '').includes(message)).length;
+        const count = chat.filter((msg) => msg && msg.is_user === false).length;
         return count >= expected;
-    }, text, minCount);
+    }, minCount);
 }
 
 async function waitForBucketCount(page, count, timeout = 20000) {
@@ -234,6 +312,47 @@ async function getSummaryCalls(page) {
     return page.evaluate(() => window.__hbsSummaryCalls || 0);
 }
 
+async function getBucketCountsByLevel(page) {
+    return page.evaluate(() => {
+        const buckets = window.SillyTavern.getContext().chatMetadata?.hbs?.buckets || [];
+        return buckets.reduce((acc, bucket) => {
+            acc[bucket.level] = (acc[bucket.level] || 0) + 1;
+            return acc;
+        }, {});
+    });
+}
+
+async function getBucketByLevel(page, level) {
+    return page.evaluate((targetLevel) => {
+        const buckets = window.SillyTavern.getContext().chatMetadata?.hbs?.buckets || [];
+        const bucket = buckets.find((entry) => entry.level === targetLevel);
+        if (!bucket) {
+            return null;
+        }
+        return {
+            level: bucket.level,
+            start: bucket.start,
+            end: bucket.end,
+            summary: bucket.summary,
+        };
+    }, level);
+}
+
+async function getHbsStateSnapshot(page) {
+    return page.evaluate(() => {
+        const context = window.SillyTavern.getContext();
+        const uaMessages = (context.chat || []).filter((msg) => msg && msg.is_system !== true
+            && (msg.is_user === true || msg.is_user === false));
+        const keepLastN = context.chatMetadata?.hbs?.keepLastN ?? 0;
+        const historyEnd = Math.max(0, uaMessages.length - keepLastN);
+        return {
+            processedUntil: context.chatMetadata?.hbs?.processedUntil ?? 0,
+            historyEnd,
+            uaLength: uaMessages.length,
+        };
+    });
+}
+
 test('HBS settings panel is injected', async ({ page }) => {
     const pageErrors = attachPageErrorHandlers(page);
 
@@ -262,19 +381,76 @@ test('HBS summarizes older messages during chat', async ({ page }) => {
 
     await sendUserMessage(page, 'Hello from user 1');
     await waitForUserMessage(page, 'Hello from user 1');
-    await waitForAiReply(page, 'Mock AI reply');
-
-    const firstReplyCount = await getAiReplyCount(page, 'Mock AI reply');
+    await waitForAssistantCount(page, 1);
 
     await sendUserMessage(page, 'Hello from user 2');
     await waitForUserMessage(page, 'Hello from user 2');
-    await waitForAiReplyCount(page, 'Mock AI reply', firstReplyCount + 1);
+    await waitForAssistantCount(page, 2);
 
     await assertBucketCount(page, 1);
 
     const summaryText = await getBucketSummary(page, 0);
-    expect(summaryText).toContain('Mock HBS summary');
+    expect(summaryText).toContain('Hello');
+    expect(summaryText).toContain('Mock');
+    expect(summaryText).toContain('---');
 
     const summaryCalls = await getSummaryCalls(page);
     expect(summaryCalls).toBe(1);
+});
+
+test('HBS merges buckets with large messages', async ({ page }) => {
+    const pageErrors = attachPageErrorHandlers(page);
+
+    await openSillyTavern(page, pageErrors);
+
+    const userPayload = 'AAA '.repeat(160).trim();
+    const assistantPayload = 'BBB '.repeat(160).trim();
+    const replyTexts = [
+        `reply-1: ${assistantPayload}`,
+        `reply-2: ${assistantPayload}`,
+        `reply-3: ${assistantPayload}`,
+        `reply-4: ${assistantPayload}`,
+    ];
+
+    await mockTextGeneration(page, replyTexts);
+    await setupHbsTestContext(page, {
+        summaryMode: 'firstWord',
+        base: 2,
+        keepLastN: 1,
+        maxSummaryWords: 50,
+    });
+
+    await page.waitForSelector('#send_textarea');
+
+    const userMessages = [
+        `message-1: ${userPayload}`,
+        `message-2: ${userPayload}`,
+        `message-3: ${userPayload}`,
+        `message-4: ${userPayload}`,
+    ];
+
+    for (let i = 0; i < userMessages.length; i += 1) {
+        await sendUserMessage(page, userMessages[i]);
+        await waitForUserMessage(page, `message-${i + 1}:`);
+        await waitForAiReply(page, `reply-${i + 1}:`);
+    }
+
+    await assertBucketCount(page, 2);
+
+    const bucketCounts = await getBucketCountsByLevel(page);
+    expect(bucketCounts[1]).toBe(1);
+    expect(bucketCounts[0]).toBe(1);
+
+    const mergedBucket = await getBucketByLevel(page, 1);
+    expect(mergedBucket).not.toBeNull();
+    expect(mergedBucket.summary).toContain('message-1:');
+    expect(mergedBucket.summary).toContain('reply-1:');
+    expect(mergedBucket.summary).toContain('message-2:');
+    expect(mergedBucket.summary).toContain('reply-2:');
+    expect(mergedBucket.summary).toContain('---');
+
+    const stateSnapshot = await getHbsStateSnapshot(page);
+    expect(stateSnapshot.processedUntil).toBe(6);
+    expect(stateSnapshot.historyEnd).toBe(7);
+    expect(stateSnapshot.uaLength).toBe(8);
 });
