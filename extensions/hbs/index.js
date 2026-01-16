@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS = {
     injectionTemplate: '[Summary of earlier conversation:]\n{{summary}}',
     injectionRole: 'system',
     showDebugPanel: true,
+    selectedProfileId: null,
 };
 
 let isProcessing = false;
@@ -51,33 +52,54 @@ async function withLock(fn) {
     }
 }
 
-async function checkServerHealth() {
-    try {
-        const response = await fetch('/api/plugins/hbs/health');
-        const data = await response.json();
-        return data;
-    } catch (error) {
-        console.error('[HBS] Health check failed:', error);
-        return { ok: false, configured: false, message: error.message };
+async function updateProfileStatus() {
+    const settings = getSettings();
+    const statusEl = document.getElementById('hbs_profile_status');
+
+    if (!statusEl) return;
+
+    if (settings.selectedProfileId) {
+        const context = getContext();
+        try {
+            const profile = context.ConnectionManagerRequestService.getProfile(settings.selectedProfileId);
+            if (profile) {
+                statusEl.textContent = `● Profile: ${profile.name}`;
+                statusEl.style.color = '#4caf50';
+            } else {
+                statusEl.textContent = '⚠ Selected profile not found';
+                statusEl.style.color = '#ff9800';
+            }
+        } catch (error) {
+            statusEl.textContent = '○ No profile selected';
+            statusEl.style.color = '#999';
+        }
+    } else {
+        statusEl.textContent = '○ No profile selected';
+        statusEl.style.color = '#999';
     }
 }
 
-async function updateHealthStatus() {
-    const health = await checkServerHealth();
-    const statusEl = document.getElementById('hbs_server_status');
+function setupProfileDropdown() {
+    const settings = getSettings();
+    const context = getContext();
 
-    if (statusEl) {
-        if (health.ok && health.configured) {
-            statusEl.textContent = `● Connected (${health.model || 'unknown'})`;
-            statusEl.style.color = '#4caf50';
-        } else if (health.ok && !health.configured) {
-            statusEl.textContent = '○ Not Configured';
-            statusEl.style.color = '#ff9800';
-            statusEl.title = health.message || 'Server plugin not configured';
-        } else {
-            statusEl.textContent = '✕ Offline';
-            statusEl.style.color = '#f44336';
-        }
+    try {
+        context.ConnectionManagerRequestService.handleDropdown(
+            '#hbs_profile_select',
+            settings.selectedProfileId,
+            async (profile) => {
+                if (profile) {
+                    settings.selectedProfileId = profile.id;
+                    console.log(`[HBS] Selected profile: ${profile.name} (${profile.id})`);
+                } else {
+                    settings.selectedProfileId = null;
+                }
+                saveSettingsDebounced();
+                await updateProfileStatus();
+            }
+        );
+    } catch (error) {
+        console.error('[HBS] Failed to setup profile dropdown:', error);
     }
 }
 
@@ -503,8 +525,16 @@ function loadSettingsHtml() {
                     <input type="checkbox" id="hbs_global_enabled" />
                     Enable globally
                 </label>
-                <div>
-                    <span id="hbs_server_status" style="font-weight: bold;">Checking...</span>
+                <div style="margin-top: 10px;">
+                    <label>
+                        Connection Profile:
+                        <select id="hbs_profile_select" class="text_pole" style="width: 100%; margin-top: 5px;">
+                            <option value="">Select a profile...</option>
+                        </select>
+                    </label>
+                </div>
+                <div style="margin-top: 5px;">
+                    <span id="hbs_profile_status" style="font-size: 0.9em;">○ No profile selected</span>
                 </div>
             </div>
 
@@ -571,7 +601,8 @@ jQuery(async () => {
     }
 
     setupEventListeners();
-    await updateHealthStatus();
+    setupProfileDropdown();
+    await updateProfileStatus();
     await onChatChanged();
 
     console.log('[HBS] Extension initialized');

@@ -82,39 +82,62 @@ export function formatMessagesForMerge(summary1, summary2) {
     return `S1: ${summary1}\n\nS2: ${summary2}`;
 }
 
-export async function callSummarize(mode, text, maxWords, meta = {}) {
-    try {
-        const response = await fetch('/api/plugins/hbs/summarize', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                mode,
-                text,
-                maxWords,
-                meta,
-            }),
-        });
+const LEAF_SYSTEM_PROMPT = `You are a precise summarizer. Summarize the following conversation excerpt.
+Focus on: key facts, character actions, plot developments, emotional states.
+Output only the summary, no preamble or meta-commentary.`;
 
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.error || `Server returned ${response.status}`);
+const MERGE_SYSTEM_PROMPT = `You are a precise summarizer. Merge these two consecutive summaries into one cohesive summary.
+Preserve chronological order and key information from both.
+Output only the merged summary, no preamble or meta-commentary.`;
+
+export async function callSummarize(mode, text, maxWords, meta = {}, profileId = null) {
+    try {
+        const context = getContext();
+
+        if (!profileId) {
+            const ext_settings = context.extensionSettings;
+            profileId = ext_settings?.hbs?.selectedProfileId;
         }
 
-        const data = await response.json();
+        if (!profileId) {
+            throw new Error('No connection profile selected. Please select a profile in HBS settings.');
+        }
 
-        if (!data.success) {
-            throw new Error(data.error || 'Summarization failed');
+        const systemPrompt = mode === 'leaf' ? LEAF_SYSTEM_PROMPT : MERGE_SYSTEM_PROMPT;
+        const userPrompt = mode === 'leaf'
+            ? `Summarize the following conversation in under ${maxWords} words:\n\n${text}`
+            : `Merge these summaries into one summary under ${maxWords} words:\n\n${text}`;
+
+        const messages = [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+        ];
+
+        console.log(`[HBS] Calling summarize: mode=${mode}, profile=${profileId}, maxWords=${maxWords}`);
+
+        const result = await context.ConnectionManagerRequestService.sendRequest(
+            profileId,
+            messages,
+            256,
+            {
+                stream: false,
+                extractData: true,
+                includePreset: true,
+                includeInstruct: false,
+            }
+        );
+
+        if (!result || !result.content) {
+            throw new Error('Empty response from Connection Manager');
         }
 
         return {
-            text: data.summary,
-            tokens: data.usage?.completion_tokens || 0,
-            usage: data.usage,
+            text: result.content.trim(),
+            tokens: 0,
+            usage: null,
         };
     } catch (error) {
-        console.error('[HBS] Summarization API error:', error);
+        console.error('[HBS] Summarization error:', error);
         throw new Error(`Summarization failed: ${error.message}`);
     }
 }
