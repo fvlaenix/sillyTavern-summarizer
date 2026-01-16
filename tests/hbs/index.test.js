@@ -12,19 +12,18 @@ let buildVirtualChatMock = null;
 let countTokensForMessagesMock = null;
 
 const extensionSettings = {};
-const saveSettingsDebounced = jest.fn();
 const eventSource = { on: jest.fn() };
 const event_types = { CHAT_CHANGED: 'chat_changed' };
 
 await jest.unstable_mockModule('../../public/scripts/extensions.js', () => ({
     getContext: () => contextValue,
     extension_settings: extensionSettings,
-    saveSettingsDebounced,
 }));
 
 await jest.unstable_mockModule('../../public/script.js', () => ({
     eventSource,
     event_types,
+    saveSettingsDebounced: jest.fn(),
 }));
 
 await jest.unstable_mockModule('../../public/scripts/extensions/third-party/hbs/bucket-manager.js', () => ({
