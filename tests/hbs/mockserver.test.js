@@ -67,7 +67,7 @@ describe('callSummarize', () => {
 
             const [, , maxTokens, options] = sendRequestMock.mock.calls[0];
 
-            expect(maxTokens).toBe(256);
+            expect(maxTokens).toBeUndefined();
             expect(options).toEqual({
                 stream: false,
                 extractData: true,

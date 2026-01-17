@@ -131,8 +131,6 @@ export async function callSummarize(mode, text, maxWords, meta = {}, profileId =
             { role: 'user', content: userPrompt },
         ];
 
-        const maxTokens = Math.max(256, Math.ceil(maxWords * 2));
-
         debugLog(`[HBS] Calling summarize: mode=${mode}, profile=${profileId}, maxWords=${maxWords}`);
         debugLog(`[HBS] PAYLOAD (Messages):`, JSON.stringify(messages, null, 2));
 
@@ -147,22 +145,16 @@ export async function callSummarize(mode, text, maxWords, meta = {}, profileId =
             }
         }
 
-        const overridePayload = {
-            include_reasoning: false,
-            reasoning_effort: undefined,
-        };
-
         const result = await context.ConnectionManagerRequestService.sendRequest(
             profileId,
             messages,
-            maxTokens,
+            undefined,
             {
                 stream: false,
                 extractData: !useRawResponse,
                 includePreset: true,
                 includeInstruct: false,
-            },
-            overridePayload
+            }
         );
 
         const extractedContent = useRawResponse && context.extractMessageFromData && result
