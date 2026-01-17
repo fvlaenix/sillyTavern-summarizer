@@ -12,6 +12,8 @@ let buildVirtualChatMock = null;
 let countTokensForMessagesMock = null;
 let computeTokenStatsMock = null;
 let checkDirtyMock = null;
+let rebuildBucketsMock = null;
+let resetHbsStateMock = null;
 
 const extensionSettings = {};
 const eventSource = { on: jest.fn() };
@@ -38,11 +40,11 @@ await jest.unstable_mockModule('../../public/scripts/extensions/third-party/hbs/
     ensureBucketsUpToDate: jest.fn(async (...args) => ensureBucketsUpToDateMock(...args)),
     buildVirtualChat: jest.fn((...args) => buildVirtualChatMock(...args)),
     computeTokenStats: jest.fn(async (...args) => computeTokenStatsMock(...args)),
-    resetHbsState: jest.fn(),
+    resetHbsState: jest.fn((...args) => resetHbsStateMock(...args)),
     checkDirty: jest.fn((...args) => checkDirtyMock(...args)),
     countTokensForMessages: jest.fn(async (...args) => countTokensForMessagesMock(...args)),
     getBucketCountsByLevel: jest.fn(() => ({})),
-    rebuildBuckets: jest.fn(async () => {}),
+    rebuildBuckets: jest.fn(async (...args) => rebuildBucketsMock(...args)),
 }));
 
 function installDomStubs() {
@@ -81,6 +83,7 @@ function installDomStubs() {
 }
 
 async function loadModule() {
+    jest.resetModules();
     await import('../../public/scripts/extensions/third-party/hbs/index.js');
     await new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -124,6 +127,8 @@ function cleanTestEnvironment() {
         bucketsCount: 0,
     }));
     checkDirtyMock = jest.fn(() => false);
+    rebuildBucketsMock = jest.fn(async () => {});
+    resetHbsStateMock = jest.fn();
 
     contextValue = {
         chat: [
@@ -365,5 +370,140 @@ describe('hbs_generate_interceptor', () => {
         const uaMessages = ensureCall[1];
         expect(uaMessages).toHaveLength(2);
         expect(uaMessages.every(m => !m.is_system)).toBe(true);
+    });
+});
+
+describe('chat change handling', () => {
+    test('initializes state and updates UI on chat change', async () => {
+        const chatMetadata = {};
+        contextValue.chatMetadata = chatMetadata;
+        computeTokenStatsMock.mockResolvedValue({
+            bucketTokens: 2,
+            remainderTokens: 1,
+            liveTokens: 3,
+            totalVirtual: 6,
+            processedUntil: 0,
+            historyEnd: 1,
+            totalMessages: 2,
+            bucketsCount: 0,
+        });
+        checkDirtyMock.mockReturnValue(true);
+
+        await loadModule();
+
+        const handlerCall = eventSource.on.mock.calls.find(
+            ([eventName]) => eventName === event_types.CHAT_CHANGED
+        );
+        expect(handlerCall).toBeTruthy();
+
+        const chatChangedHandler = handlerCall[1];
+        await chatChangedHandler();
+
+        expect(initHbsStateMock).toHaveBeenCalled();
+        expect(contextValue.saveMetadata).toHaveBeenCalled();
+        expect(document.getElementById('hbs_chat_enabled').checked).toBe(true);
+        expect(document.getElementById('hbs_dirty_indicator').style.display).toBe('block');
+        expect(document.getElementById('hbs_total_messages').textContent).toBe('2');
+        expect(document.getElementById('hbs_total_virtual').textContent).toBe('6');
+    });
+});
+
+describe('button handlers', () => {
+    test('force build calls bucket creation and saves metadata', async () => {
+        const state = {
+            enabled: true,
+            keepLastN: 1,
+            processedUntil: 0,
+            buckets: [],
+        };
+        contextValue.chatMetadata.hbs = state;
+        computeTokenStatsMock.mockResolvedValue({
+            bucketTokens: 1,
+            remainderTokens: 0,
+            liveTokens: 1,
+            totalVirtual: 2,
+            processedUntil: 1,
+            historyEnd: 1,
+            totalMessages: 2,
+            bucketsCount: 1,
+        });
+
+        await loadModule();
+
+        document.getElementById('hbs_force_build').click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(ensureBucketsUpToDateMock).toHaveBeenCalled();
+        expect(contextValue.saveMetadata).toHaveBeenCalled();
+        expect(global.toastr.success).toHaveBeenCalledWith('Buckets built successfully');
+    });
+
+    test('reset state clears buckets and saves metadata', async () => {
+        contextValue.chatMetadata.hbs = {
+            enabled: true,
+            keepLastN: 1,
+            processedUntil: 2,
+            buckets: [{ level: 0 }],
+        };
+
+        await loadModule();
+
+        document.getElementById('hbs_reset').click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(global.confirm).toHaveBeenCalled();
+        expect(resetHbsStateMock).toHaveBeenCalled();
+        expect(contextValue.saveMetadata).toHaveBeenCalled();
+        expect(global.toastr.success).toHaveBeenCalledWith('HBS state reset');
+    });
+
+    test('rebuild state re-summarizes and saves metadata', async () => {
+        contextValue.chatMetadata.hbs = {
+            enabled: true,
+            keepLastN: 1,
+            processedUntil: 0,
+            buckets: [],
+        };
+        rebuildBucketsMock = jest.fn(async () => {});
+
+        await loadModule();
+
+        document.getElementById('hbs_rebuild').click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(rebuildBucketsMock).toHaveBeenCalled();
+        expect(contextValue.saveMetadata).toHaveBeenCalled();
+        expect(global.toastr.success).toHaveBeenCalledWith('Buckets rebuilt successfully');
+    });
+});
+
+describe('withLock', () => {
+    test('prevents concurrent force build executions', async () => {
+        const state = {
+            enabled: true,
+            keepLastN: 1,
+            processedUntil: 0,
+            buckets: [],
+        };
+        contextValue.chatMetadata.hbs = state;
+
+        let resolvePromise = null;
+        ensureBucketsUpToDateMock = jest.fn(
+            () => new Promise((resolve) => {
+                resolvePromise = resolve;
+            })
+        );
+
+        await loadModule();
+
+        document.getElementById('hbs_force_build').click();
+        document.getElementById('hbs_force_build').click();
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(ensureBucketsUpToDateMock).toHaveBeenCalledTimes(1);
+
+        resolvePromise();
+        await new Promise((resolve) => setTimeout(resolve, 0));
     });
 });

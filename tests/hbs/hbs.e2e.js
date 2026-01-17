@@ -105,6 +105,60 @@ async function mockTextGeneration(page, responseText = 'Mock AI reply') {
     });
 }
 
+function extractPromptFromPayload(payload) {
+    if (!payload) {
+        return '';
+    }
+    if (typeof payload === 'string') {
+        return payload;
+    }
+    if (payload.prompt) {
+        return payload.prompt;
+    }
+    if (Array.isArray(payload.messages)) {
+        return payload.messages.map((message) => message?.content || '').join('\n');
+    }
+    if (payload.text) {
+        return payload.text;
+    }
+    return JSON.stringify(payload);
+}
+
+async function mockTextGenerationWithCapture(page, captureFn, responseText = 'Mock AI reply') {
+    const responseQueue = Array.isArray(responseText) ? responseText.slice() : null;
+    const defaultResponse = Array.isArray(responseText) && responseText.length
+        ? responseText[responseText.length - 1]
+        : responseText;
+
+    await page.route('**/api/**/generate', async (route, request) => {
+        const rawPayload = request.postData();
+        let payload = null;
+        try {
+            payload = rawPayload ? JSON.parse(rawPayload) : null;
+        } catch (error) {
+            payload = rawPayload;
+        }
+        if (captureFn) {
+            captureFn(payload);
+        }
+
+        const text = responseQueue && responseQueue.length
+            ? responseQueue.shift()
+            : (defaultResponse || 'Mock AI reply');
+        await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+                results: [{ text }],
+                choices: [{ text, message: { content: text } }],
+                output: text,
+                text,
+                content: [{ type: 'text', text }],
+            }),
+        });
+    });
+}
+
 async function setupHbsTestContext(page, {
     mainApi = 'kobold',
     summaryText = 'Mock HBS summary',
@@ -144,7 +198,17 @@ async function setupHbsTestContext(page, {
         if (typeof originalInterceptor === 'function') {
             window.hbs_generate_interceptor = async (...args) => {
                 window.__hbsInterceptorCalls += 1;
-                return await originalInterceptor(...args);
+                const result = await originalInterceptor(...args);
+                const chatArg = args[0];
+                if (Array.isArray(chatArg)) {
+                    window.__hbsLastVirtualChat = chatArg.map((msg) => ({
+                        mes: msg?.mes || '',
+                        is_user: msg?.is_user,
+                        is_system: msg?.is_system,
+                        role: msg?.role,
+                    }));
+                }
+                return result;
             };
         }
 
@@ -453,4 +517,97 @@ test('HBS merges buckets with large messages', async ({ page }) => {
     expect(stateSnapshot.processedUntil).toBe(6);
     expect(stateSnapshot.historyEnd).toBe(7);
     expect(stateSnapshot.uaLength).toBe(8);
+});
+
+test('HBS injects summaries into generation prompt', async ({ page }) => {
+    const pageErrors = attachPageErrorHandlers(page);
+
+    await openSillyTavern(page, pageErrors);
+
+    const capturedRequests = [];
+    await mockTextGenerationWithCapture(page, (payload) => {
+        capturedRequests.push(payload);
+    });
+
+    await setupHbsTestContext(page, {
+        summaryMode: 'constant',
+        summaryText: 'HBS_SUMMARY_MARKER',
+        base: 2,
+        keepLastN: 1,
+        maxSummaryWords: 20,
+    });
+
+    await page.waitForSelector('#send_textarea');
+
+    await sendUserMessage(page, 'Prompt one');
+    await waitForUserMessage(page, 'Prompt one');
+    await waitForAssistantCount(page, 1);
+
+    await sendUserMessage(page, 'Prompt two');
+    await waitForUserMessage(page, 'Prompt two');
+    await waitForAssistantCount(page, 2);
+
+    await assertBucketCount(page, 1);
+
+    await sendUserMessage(page, 'Prompt three');
+    await waitForUserMessage(page, 'Prompt three');
+    await waitForAssistantCount(page, 3);
+
+    expect(capturedRequests.length).toBeGreaterThan(0);
+    const lastPayload = capturedRequests[capturedRequests.length - 1];
+    const prompt = extractPromptFromPayload(lastPayload);
+    expect(prompt).toContain('HBS_SUMMARY_MARKER');
+});
+
+test('HBS prompt preserves summary and live window ordering', async ({ page }) => {
+    const pageErrors = attachPageErrorHandlers(page);
+
+    await openSillyTavern(page, pageErrors);
+
+    const replies = ['reply-1', 'reply-2', 'reply-3'];
+    await mockTextGeneration(page, replies);
+
+    await setupHbsTestContext(page, {
+        summaryMode: 'constant',
+        summaryText: 'HBS_SUMMARY_MARKER',
+        base: 2,
+        keepLastN: 1,
+        maxSummaryWords: 20,
+    });
+
+    await page.waitForSelector('#send_textarea');
+
+    await sendUserMessage(page, 'Prompt one');
+    await waitForUserMessage(page, 'Prompt one');
+    await waitForAiReply(page, 'reply-1');
+
+    await sendUserMessage(page, 'Prompt two');
+    await waitForUserMessage(page, 'Prompt two');
+    await waitForAiReply(page, 'reply-2');
+
+    await assertBucketCount(page, 1);
+
+    await sendUserMessage(page, 'Prompt three');
+    await waitForUserMessage(page, 'Prompt three');
+    await waitForAiReply(page, 'reply-3');
+
+    const virtualChat = await page.evaluate(() => window.__hbsLastVirtualChat || []);
+    const summaryIndex = virtualChat.findIndex((msg) => msg?.mes?.includes('HBS_SUMMARY_MARKER'));
+    const promptTwoIndex = virtualChat.findIndex((msg) => msg?.mes?.includes('Prompt two'));
+    const replyTwoIndex = virtualChat.findIndex((msg) => msg?.mes?.includes('reply-2'));
+    const promptThreeIndex = virtualChat.findIndex((msg) => msg?.mes?.includes('Prompt three'));
+
+    expect(summaryIndex).toBeGreaterThan(-1);
+    expect(promptThreeIndex).toBeGreaterThan(-1);
+    expect(summaryIndex).toBeLessThan(promptThreeIndex);
+    if (promptTwoIndex !== -1) {
+        expect(summaryIndex).toBeLessThan(promptTwoIndex);
+        expect(promptTwoIndex).toBeLessThan(promptThreeIndex);
+    }
+    if (replyTwoIndex !== -1) {
+        if (promptTwoIndex !== -1) {
+            expect(replyTwoIndex).toBeGreaterThan(promptTwoIndex);
+        }
+        expect(replyTwoIndex).toBeLessThan(promptThreeIndex);
+    }
 });
