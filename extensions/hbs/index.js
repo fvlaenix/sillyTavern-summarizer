@@ -13,6 +13,7 @@ import {
     countTokensForMessages,
     getBucketCountsByLevel,
     rebuildBuckets,
+    setDebug,
 } from './bucket-manager.js';
 
 const MODULE_NAME = 'hbs';
@@ -25,6 +26,7 @@ const DEFAULT_SETTINGS = {
     injectionRole: 'system',
     showDebugPanel: true,
     selectedProfileId: null,
+    debugOutput: false,
 };
 
 let isProcessing = false;
@@ -38,9 +40,15 @@ function getSettings() {
     return extension_settings[MODULE_NAME];
 }
 
+function debugLog(...args) {
+    if (getSettings().debugOutput) {
+        console.log('[HBS-UI]', ...args);
+    }
+}
+
 async function withLock(fn) {
     if (isProcessing) {
-        console.debug('[HBS] Summarization already in progress, skipping');
+        debugLog('Summarization already in progress, skipping');
         return null;
     }
 
@@ -90,7 +98,7 @@ function setupProfileDropdown() {
             async (profile) => {
                 if (profile) {
                     settings.selectedProfileId = profile.id;
-                    console.log(`[HBS] Selected profile: ${profile.name} (${profile.id})`);
+                    debugLog(`Selected profile: ${profile.name} (${profile.id})`);
                 } else {
                     settings.selectedProfileId = null;
                 }
@@ -388,7 +396,7 @@ async function hbs_generate_interceptor(chat, contextSize, abort, type) {
             const uaMessages = chat.filter(isUserAssistant);
             const chatId = context.chatId || 'unknown';
 
-            console.log(`[HBS] Generate interceptor: ${uaMessages.length} UA messages, contextSize=${contextSize}`);
+            debugLog(`Generate interceptor: ${uaMessages.length} UA messages, contextSize=${contextSize}`);
 
             const historyEnd = Math.max(0, uaMessages.length - state.keepLastN);
             const liveMessages = uaMessages.slice(historyEnd);
@@ -408,7 +416,7 @@ async function hbs_generate_interceptor(chat, contextSize, abort, type) {
 
             const virtualChat = buildVirtualChat(state, uaMessages, settings);
 
-            console.log(`[HBS] Virtual chat: ${virtualChat.length} messages (original: ${chat.length})`);
+            debugLog(`Virtual chat: ${virtualChat.length} messages (original: ${chat.length})`);
 
             chat.splice(0, chat.length, ...virtualChat);
 
@@ -436,6 +444,17 @@ function setupEventListeners() {
             const settings = getSettings();
             settings.enabledGlobally = e.target.checked;
             saveSettingsDebounced();
+        });
+    }
+
+    const debugOutputCheckbox = document.getElementById('hbs_debug_output');
+    if (debugOutputCheckbox) {
+        debugOutputCheckbox.addEventListener('change', (e) => {
+            const settings = getSettings();
+            settings.debugOutput = e.target.checked;
+            saveSettingsDebounced();
+            setDebug(settings.debugOutput);
+            debugLog('Debug output enabled');
         });
     }
 
@@ -525,6 +544,10 @@ function loadSettingsHtml() {
                     <input type="checkbox" id="hbs_global_enabled" />
                     Enable globally
                 </label>
+                <label>
+                    <input type="checkbox" id="hbs_debug_output" />
+                    Debug output
+                </label>
                 <div style="margin-top: 10px;">
                     <label>
                         Connection Profile:
@@ -600,10 +623,16 @@ jQuery(async () => {
         globalEnableCheckbox.checked = settings.enabledGlobally;
     }
 
+    const debugOutputCheckbox = document.getElementById('hbs_debug_output');
+    if (debugOutputCheckbox) {
+        debugOutputCheckbox.checked = settings.debugOutput;
+        setDebug(settings.debugOutput);
+    }
+
     setupEventListeners();
     setupProfileDropdown();
     await updateProfileStatus();
     await onChatChanged();
 
-    console.log('[HBS] Extension initialized');
+    debugLog('Extension initialized');
 });

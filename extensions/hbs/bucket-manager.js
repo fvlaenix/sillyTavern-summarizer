@@ -1,6 +1,19 @@
 import { getContext } from '../../../../scripts/extensions.js';
 import { getStringHash } from '../../../../scripts/utils.js';
 
+let debugEnabled = false;
+
+export function setDebug(enabled) {
+    debugEnabled = enabled;
+    console.log(`[HBS] Debug mode set to: ${enabled}`);
+}
+
+function debugLog(...args) {
+    if (debugEnabled) {
+        console.log('[HBS]', ...args);
+    }
+}
+
 const DEFAULT_STATE = {
     version: 1,
     enabled: true,
@@ -20,6 +33,7 @@ export function isUserAssistant(msg) {
 }
 
 export function loadHbsState(chatMetadata) {
+    // debugLog('Loading HBS state');
     if (!chatMetadata || !chatMetadata.hbs) {
         return null;
     }
@@ -27,6 +41,7 @@ export function loadHbsState(chatMetadata) {
 }
 
 export function initHbsState(chatMetadata, defaultSettings) {
+    debugLog('Initializing new HBS state', defaultSettings);
     const state = {
         ...DEFAULT_STATE,
         base: defaultSettings.defaultBase || DEFAULT_STATE.base,
@@ -56,11 +71,13 @@ export function checkDirty(state, uaMessages, historyEnd) {
     const currentFingerprint = computeFingerprint(uaMessages, historyEnd);
 
     if (!state.fingerprint) {
+        debugLog('No fingerprint found, setting initial fingerprint');
         state.fingerprint = currentFingerprint;
         return false;
     }
 
     if (state.processedUntil > 0 && currentFingerprint !== state.fingerprint) {
+        debugLog('Fingerprint mismatch! History has changed.');
         state.dirty = true;
         return true;
     }
@@ -91,6 +108,7 @@ Preserve chronological order and key information from both.
 Output only the merged summary, no preamble or meta-commentary.`;
 
 export async function callSummarize(mode, text, maxWords, meta = {}, profileId = null) {
+    debugLog(`callSummarize invoked: mode=${mode}, maxWords=${maxWords}, textLength=${text.length}, meta=`, meta);
     try {
         const context = getContext();
 
@@ -113,7 +131,8 @@ export async function callSummarize(mode, text, maxWords, meta = {}, profileId =
             { role: 'user', content: userPrompt },
         ];
 
-        console.log(`[HBS] Calling summarize: mode=${mode}, profile=${profileId}, maxWords=${maxWords}`);
+        debugLog(`[HBS] Calling summarize: mode=${mode}, profile=${profileId}, maxWords=${maxWords}`);
+        debugLog(`[HBS] PAYLOAD (Messages):`, JSON.stringify(messages, null, 2));
 
         const result = await context.ConnectionManagerRequestService.sendRequest(
             profileId,
@@ -131,6 +150,9 @@ export async function callSummarize(mode, text, maxWords, meta = {}, profileId =
             throw new Error('Empty response from Connection Manager');
         }
 
+        debugLog(`Summarization successful. Result length: ${result.content.length}`);
+        debugLog(`[HBS] RESPONSE (Content):`, result.content);
+
         return {
             text: result.content.trim(),
             tokens: 0,
@@ -143,20 +165,26 @@ export async function callSummarize(mode, text, maxWords, meta = {}, profileId =
 }
 
 export async function performMergeCarry(state, chatId) {
+    debugLog(`Checking for merge opportunities. Buckets count: ${state.buckets.length}`);
     while (state.buckets.length >= 2) {
         const b2 = state.buckets[state.buckets.length - 1];
         const b1 = state.buckets[state.buckets.length - 2];
 
+        debugLog(`Comparing last two buckets: L${b1.level} [${b1.start}-${b1.end}) and L${b2.level} [${b2.start}-${b2.end})`);
+
         if (b1.level !== b2.level || b1.end !== b2.start) {
+            debugLog('No merge needed (level mismatch or gap).');
             break;
         }
 
-        console.log(`[HBS] Merging buckets: L${b1.level} [${b1.start}-${b1.end}) + [${b2.start}-${b2.end})`);
+        debugLog(`[HBS] Merging buckets: L${b1.level} [${b1.start}-${b1.end}) + [${b2.start}-${b2.end})`);
 
         state.buckets.pop();
         state.buckets.pop();
 
         const mergeText = formatMessagesForMerge(b1.summary, b2.summary);
+        debugLog(`[HBS] Merge Content:\n${mergeText}`);
+
         const result = await callSummarize('merge', mergeText, state.maxSummaryWords, {
             chatId,
             range: [b1.start, b2.end],
@@ -165,32 +193,36 @@ export async function performMergeCarry(state, chatId) {
         const context = getContext();
         const summaryTokens = await context.getTokenCountAsync(result.text, 0);
 
-        state.buckets.push({
+        const newBucket = {
             level: b1.level + 1,
             start: b1.start,
             end: b2.end,
             summary: result.text,
             summaryTokens: summaryTokens,
             createdAt: Date.now(),
-        });
+        };
 
-        console.log(`[HBS] Merged to: L${b1.level + 1} [${b1.start}-${b2.end})`);
+        state.buckets.push(newBucket);
+        debugLog(`[HBS] Merged to: L${b1.level + 1} [${b1.start}-${b2.end})`, newBucket);
     }
 }
 
 export async function ensureBucketsUpToDate(state, uaMessages, chatId) {
     const historyEnd = Math.max(0, uaMessages.length - state.keepLastN);
 
-    console.log(`[HBS] Bucket check: processedUntil=${state.processedUntil}, historyEnd=${historyEnd}, total=${uaMessages.length}`);
+    debugLog(`[HBS] Bucket check: processedUntil=${state.processedUntil}, historyEnd=${historyEnd}, total=${uaMessages.length}, base=${state.base}`);
 
     while (state.processedUntil + state.base <= historyEnd) {
         const start = state.processedUntil;
         const end = start + state.base;
+        debugLog(`Processing chunk: [${start}-${end})`);
         const chunk = uaMessages.slice(start, end);
 
-        console.log(`[HBS] Creating leaf bucket: [${start}-${end})`);
+        debugLog(`[HBS] Creating leaf bucket: [${start}-${end})`);
 
         const text = formatMessagesForLeaf(chunk);
+        debugLog(`[HBS] Leaf Chunk Content:\n${text}`);
+
         const result = await callSummarize('leaf', text, state.maxSummaryWords, {
             chatId,
             range: [start, end],
@@ -199,14 +231,17 @@ export async function ensureBucketsUpToDate(state, uaMessages, chatId) {
         const context = getContext();
         const summaryTokens = await context.getTokenCountAsync(result.text, 0);
 
-        state.buckets.push({
+        const newBucket = {
             level: 0,
             start,
             end,
             summary: result.text,
             summaryTokens: summaryTokens,
             createdAt: Date.now(),
-        });
+        };
+
+        state.buckets.push(newBucket);
+        debugLog('Created new leaf bucket:', newBucket);
 
         state.processedUntil = end;
 
@@ -215,6 +250,7 @@ export async function ensureBucketsUpToDate(state, uaMessages, chatId) {
 
     state.fingerprint = computeFingerprint(uaMessages, historyEnd);
     state.dirty = false;
+    debugLog('ensureBucketsUpToDate complete. State:', state);
 }
 
 export function clampStateToHistoryEnd(state, historyEnd) {
@@ -222,7 +258,7 @@ export function clampStateToHistoryEnd(state, historyEnd) {
         return;
     }
 
-    console.log(`[HBS] History end moved backwards: processedUntil=${state.processedUntil} -> ${historyEnd}`);
+    debugLog(`[HBS] History end moved backwards: processedUntil=${state.processedUntil} -> ${historyEnd}`);
 
     state.buckets = state.buckets.filter(bucket => bucket.end <= historyEnd);
 
@@ -236,15 +272,18 @@ export function clampStateToHistoryEnd(state, historyEnd) {
     }
 
     state.dirty = true;
+    debugLog('State clamped. New processedUntil:', state.processedUntil);
 }
 
 export function buildVirtualChat(state, uaMessages, extensionSettings) {
+    debugLog('Building virtual chat...');
     const historyEnd = Math.max(0, uaMessages.length - state.keepLastN);
     const virtual = [];
 
     clampStateToHistoryEnd(state, historyEnd);
 
     if (state.buckets.length > 0) {
+        debugLog(`Injecting ${state.buckets.length} buckets as summary.`);
         const sortedBuckets = state.buckets.slice().sort((a, b) => a.start - b.start);
         const allSummaries = sortedBuckets.map(b => b.summary).join('\n\n');
 
@@ -265,16 +304,19 @@ export function buildVirtualChat(state, uaMessages, extensionSettings) {
     }
 
     const remainderStart = state.processedUntil;
+    debugLog(`Adding remainder messages from ${remainderStart} to ${historyEnd}`);
     for (let i = remainderStart; i < historyEnd; i++) {
         if (i < uaMessages.length) {
             virtual.push(uaMessages[i]);
         }
     }
 
+    debugLog(`Adding live window messages from ${historyEnd} to ${uaMessages.length}`);
     for (let i = historyEnd; i < uaMessages.length; i++) {
         virtual.push(uaMessages[i]);
     }
 
+    debugLog(`Virtual chat built. Total messages: ${virtual.length}`);
     return virtual;
 }
 
@@ -299,6 +341,7 @@ export async function countTokensForMessages(messages) {
 }
 
 export async function computeTokenStats(state, uaMessages) {
+    debugLog('Computing token stats...');
     const historyEnd = Math.max(0, uaMessages.length - state.keepLastN);
 
     let bucketTokens = 0;
@@ -312,7 +355,7 @@ export async function computeTokenStats(state, uaMessages) {
     const liveMessages = uaMessages.slice(historyEnd);
     const liveTokens = await countTokensForMessages(liveMessages);
 
-    return {
+    const stats = {
         bucketTokens,
         remainderTokens,
         liveTokens,
@@ -322,9 +365,12 @@ export async function computeTokenStats(state, uaMessages) {
         totalMessages: uaMessages.length,
         bucketsCount: state.buckets.length,
     };
+    debugLog('Stats computed:', stats);
+    return stats;
 }
 
 export function resetHbsState(state) {
+    debugLog('Resetting HBS state');
     state.processedUntil = 0;
     state.buckets = [];
     state.dirty = false;
@@ -341,6 +387,7 @@ export function getBucketCountsByLevel(state) {
 }
 
 export async function rebuildBuckets(state, uaMessages, chatId) {
+    debugLog('Rebuilding buckets from scratch...');
     const oldProcessedUntil = state.processedUntil;
     const oldBuckets = state.buckets.slice();
 
