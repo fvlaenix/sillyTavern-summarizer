@@ -45,6 +45,7 @@ await jest.unstable_mockModule('../../public/scripts/extensions/third-party/hbs/
     countTokensForMessages: jest.fn(async (...args) => countTokensForMessagesMock(...args)),
     getBucketCountsByLevel: jest.fn(() => ({})),
     rebuildBuckets: jest.fn(async (...args) => rebuildBucketsMock(...args)),
+    setDebug: jest.fn(),
 }));
 
 function installDomStubs() {
