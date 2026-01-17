@@ -422,16 +422,18 @@ test('HBS settings panel is injected', async ({ page }) => {
 
     await openSillyTavern(page, pageErrors);
 
-    const settingsPanel = page.locator('#hbs_settings');
+    const settingsPanel = page.locator('#hbs_settings_container');
     await expect(settingsPanel).toHaveCount(1);
-    await expect(settingsPanel).toContainText('HBS - Hierarchical Bucket Summarizer');
-    const profileSelect = page.locator('#hbs_profile_select');
-    await expect(profileSelect).toHaveCount(1);
+    await expect(settingsPanel).toContainText('Open HBS Dashboard');
 
-    const optionCount = await profileSelect.locator('option').count();
-    expect(optionCount).toBeGreaterThan(0);
+    const openDashboardButton = page.locator('#hbs_open_dashboard');
+    await expect(openDashboardButton).toHaveCount(1);
+    await page.evaluate(() => {
+        document.getElementById('hbs_open_dashboard')?.click();
+    });
 
-    await expect(page.locator('#hbs_profile_status')).toHaveCount(1);
+    await expect(page.locator('.hbs-dashboard-overlay')).toHaveCount(1);
+    await expect(page.locator('#hbs_dash_profile')).toHaveCount(1);
 });
 
 test('HBS summarizes older messages during chat', async ({ page }) => {

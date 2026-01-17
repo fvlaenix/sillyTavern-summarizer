@@ -16,7 +16,7 @@ let rebuildBucketsMock = null;
 let resetHbsStateMock = null;
 
 const extensionSettings = {};
-const eventSource = { on: jest.fn() };
+const eventSource = { on: jest.fn(), off: jest.fn() };
 const event_types = { CHAT_CHANGED: 'chat_changed' };
 
 await jest.unstable_mockModule('../../public/scripts/extensions.js', () => ({
@@ -45,6 +45,7 @@ await jest.unstable_mockModule('../../public/scripts/extensions/third-party/hbs/
     countTokensForMessages: jest.fn(async (...args) => countTokensForMessagesMock(...args)),
     getBucketCountsByLevel: jest.fn(() => ({})),
     rebuildBuckets: jest.fn(async (...args) => rebuildBucketsMock(...args)),
+    formatMessagesForLeaf: jest.fn(),
     setDebug: jest.fn(),
 }));
 
@@ -81,11 +82,38 @@ function installDomStubs() {
     };
 
     global.confirm = jest.fn(() => true);
+
+    const ctx = {
+        clearRect: jest.fn(),
+        fillRect: jest.fn(),
+        createLinearGradient: jest.fn(() => ({ addColorStop: jest.fn() })),
+        fillText: jest.fn(),
+        strokeRect: jest.fn(),
+    };
+    if (global.HTMLCanvasElement) {
+        HTMLCanvasElement.prototype.getContext = jest.fn(() => ctx);
+    }
+    if (global.Element) {
+        Element.prototype.getBoundingClientRect = jest.fn(() => ({
+            width: 200,
+            height: 80,
+            top: 0,
+            left: 0,
+            right: 200,
+            bottom: 80,
+        }));
+    }
 }
 
 async function loadModule() {
     jest.resetModules();
     await import('../../public/scripts/extensions/third-party/hbs/index.js');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function openDashboard() {
+    const openButton = document.getElementById('hbs_open_dashboard');
+    openButton.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
@@ -147,6 +175,7 @@ function cleanTestEnvironment() {
     };
 
     eventSource.on.mockClear();
+    eventSource.off.mockClear();
 }
 
 beforeEach(() => {
@@ -154,18 +183,20 @@ beforeEach(() => {
 });
 
 describe('HBS index UI', () => {
-    test('injects settings UI and wires profile dropdown', async () => {
+    test('injects settings UI and opens dashboard', async () => {
         await loadModule();
 
-        const settingsPanel = document.querySelector('#hbs_settings');
+        const settingsPanel = document.querySelector('#hbs_settings_container');
         expect(settingsPanel).toBeTruthy();
 
+        await openDashboard();
+
+        expect(document.querySelector('.hbs-dashboard-overlay')).toBeTruthy();
         expect(handleDropdownMock).toHaveBeenCalledWith(
-            '#hbs_profile_select',
+            document.querySelector('#hbs_dash_profile'),
             null,
             expect.any(Function)
         );
-
         expect(eventSource.on).toHaveBeenCalledWith(event_types.CHAT_CHANGED, expect.any(Function));
     });
 });
@@ -402,10 +433,7 @@ describe('chat change handling', () => {
 
         expect(initHbsStateMock).toHaveBeenCalled();
         expect(contextValue.saveMetadata).toHaveBeenCalled();
-        expect(document.getElementById('hbs_chat_enabled').checked).toBe(true);
-        expect(document.getElementById('hbs_dirty_indicator').style.display).toBe('block');
-        expect(document.getElementById('hbs_total_messages').textContent).toBe('2');
-        expect(document.getElementById('hbs_total_virtual').textContent).toBe('6');
+        expect(document.getElementById('hbs_extension_status').textContent).toBe('History modified (Dirty)');
     });
 });
 
@@ -418,6 +446,10 @@ describe('button handlers', () => {
             buckets: [],
         };
         contextValue.chatMetadata.hbs = state;
+        contextValue.chat = [
+            { mes: 'hi', is_user: true, is_system: false },
+            { mes: 'hello', is_user: false, is_system: false },
+        ];
         computeTokenStatsMock.mockResolvedValue({
             bucketTokens: 1,
             remainderTokens: 0,
@@ -430,13 +462,14 @@ describe('button handlers', () => {
         });
 
         await loadModule();
+        await openDashboard();
 
-        document.getElementById('hbs_force_build').click();
+        document.getElementById('hbs_dash_force_build').click();
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         expect(ensureBucketsUpToDateMock).toHaveBeenCalled();
         expect(contextValue.saveMetadata).toHaveBeenCalled();
-        expect(global.toastr.success).toHaveBeenCalledWith('Buckets built successfully');
+        expect(global.toastr.success).toHaveBeenCalledWith('Buckets built.');
     });
 
     test('reset state clears buckets and saves metadata', async () => {
@@ -444,18 +477,29 @@ describe('button handlers', () => {
             enabled: true,
             keepLastN: 1,
             processedUntil: 2,
-            buckets: [{ level: 0 }],
+            buckets: [{
+                level: 0,
+                start: 0,
+                end: 2,
+                summary: 'summary text',
+                summaryTokens: 5,
+            }],
         };
+        contextValue.chat = [
+            { mes: 'hi', is_user: true, is_system: false },
+            { mes: 'hello', is_user: false, is_system: false },
+        ];
 
         await loadModule();
+        await openDashboard();
 
-        document.getElementById('hbs_reset').click();
+        document.getElementById('hbs_dash_reset').click();
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         expect(global.confirm).toHaveBeenCalled();
         expect(resetHbsStateMock).toHaveBeenCalled();
         expect(contextValue.saveMetadata).toHaveBeenCalled();
-        expect(global.toastr.success).toHaveBeenCalledWith('HBS state reset');
+        expect(global.toastr.success).toHaveBeenCalledWith('State reset.');
     });
 
     test('rebuild state re-summarizes and saves metadata', async () => {
@@ -465,28 +509,36 @@ describe('button handlers', () => {
             processedUntil: 0,
             buckets: [],
         };
+        contextValue.chat = [
+            { mes: 'hi', is_user: true, is_system: false },
+            { mes: 'hello', is_user: false, is_system: false },
+        ];
         rebuildBucketsMock = jest.fn(async () => {});
 
         await loadModule();
+        await openDashboard();
 
-        document.getElementById('hbs_rebuild').click();
+        document.getElementById('hbs_dash_rebuild').click();
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         expect(rebuildBucketsMock).toHaveBeenCalled();
         expect(contextValue.saveMetadata).toHaveBeenCalled();
-        expect(global.toastr.success).toHaveBeenCalledWith('Buckets rebuilt successfully');
+        expect(global.toastr.success).toHaveBeenCalledWith('Rebuild complete.');
     });
 });
 
 describe('withLock', () => {
-    test('prevents concurrent force build executions', async () => {
-        const state = {
+    test('prevents concurrent interceptor executions', async () => {
+        contextValue.chatMetadata.hbs = {
             enabled: true,
             keepLastN: 1,
             processedUntil: 0,
             buckets: [],
         };
-        contextValue.chatMetadata.hbs = state;
+        contextValue.chat = [
+            { mes: 'old', is_user: true, is_system: false },
+            { mes: 'recent', is_user: true, is_system: false },
+        ];
 
         let resolvePromise = null;
         ensureBucketsUpToDateMock = jest.fn(
@@ -497,14 +549,16 @@ describe('withLock', () => {
 
         await loadModule();
 
-        document.getElementById('hbs_force_build').click();
-        document.getElementById('hbs_force_build').click();
+        const abort = jest.fn();
+        const chat = [...contextValue.chat];
+        const firstCall = window.hbs_generate_interceptor(chat, 1000, abort, 'normal');
+        const secondCall = window.hbs_generate_interceptor(chat, 1000, abort, 'normal');
 
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         expect(ensureBucketsUpToDateMock).toHaveBeenCalledTimes(1);
 
         resolvePromise();
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await Promise.all([firstCall, secondCall]);
     });
 });

@@ -40,7 +40,12 @@ npm install --no-save jest-environment-jsdom yaml
 echo "Syncing HBS extension"
 rm -rf "$ST_REPO/public/scripts/extensions/third-party/hbs"
 mkdir -p "$ST_REPO/public/scripts/extensions/third-party/hbs"
-cp "$HBS_REPO/index.js" "$HBS_REPO/manifest.json" "$HBS_REPO/style.css" "$HBS_REPO/bucket-manager.js" "$ST_REPO/public/scripts/extensions/third-party/hbs/"
+cp "$HBS_REPO/index.js" \
+   "$HBS_REPO/manifest.json" \
+   "$HBS_REPO/style.css" \
+   "$HBS_REPO/bucket-manager.js" \
+   "$HBS_REPO/dashboard.js" \
+   "$ST_REPO/public/scripts/extensions/third-party/hbs/"
 
 echo "Syncing HBS tests"
 rm -rf "$ST_REPO/tests/hbs"
