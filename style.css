@@ -17,7 +17,7 @@
     width: 90%;
     max-width: 1000px;
     height: 85vh;
-    background-color: var(--SmartThemeBodyColor, #1a1b26);
+    background-color: var(--SmartThemeBodyBackground, #1a1b26);
     background-image: var(--SmartThemeBodyBackground, none);
     color: var(--SmartThemeBodyColor, #e0e0e0);
     border: 1px solid var(--SmartThemeBorderColor, #414141);
@@ -300,6 +300,47 @@
     border-radius: 4px;
     font-size: 0.9rem;
     cursor: default;
+    border: 1px solid transparent;
+}
+
+.hbs-bucket-row.expanded {
+    background-color: rgba(0,0,0,0.2);
+    border-color: var(--SmartThemeBorderColor, #444);
+}
+
+.bucket-header {
+    cursor: pointer;
+    user-select: none;
+}
+
+.expand-icon {
+    display: inline-block;
+    width: 15px;
+    text-align: center;
+    transition: transform 0.2s;
+    font-size: 0.8em;
+    opacity: 0.7;
+}
+
+.bucket-full-text {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+    border-left: 2px solid var(--SmartThemeQuoteColor, #4caf50);
+    white-space: pre-wrap;
+    font-size: 0.9em;
+    line-height: 1.4;
+    color: var(--SmartThemeBodyColor, #ccc);
+}
+
+.bucket-preview {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--SmartThemeBodyColor, #ccc);
+    opacity: 0.8;
+    padding-left: 25px; /* Indent to align with text after icon */
 }
 
 .hbs-bucket-row:hover {
@@ -323,13 +364,6 @@
 
 .badge.level {
     background-color: var(--SmartThemeQuoteColor, #4caf50);
-}
-
-.bucket-text {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    color: var(--SmartThemeBodyColor, #ccc);
 }
 
 /* Buttons */

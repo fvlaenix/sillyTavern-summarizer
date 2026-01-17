@@ -379,14 +379,28 @@ function updateBucketList(overlay, state) {
         const div = document.createElement('div');
         div.className = 'hbs-bucket-row';
         div.innerHTML = `
-            <div class="bucket-meta">
-                <span class="badge level">L${b.level}</span>
-                <span class="range">[${b.start}-${b.end}]</span>
-                <span class="tokens">${b.summaryTokens}t</span>
+            <div class="bucket-header">
+                <div class="bucket-meta">
+                    <i class="fa-solid fa-chevron-right expand-icon"></i>
+                    <span class="badge level">L${b.level}</span>
+                    <span class="range">[${b.start}-${b.end}]</span>
+                    <span class="tokens">${b.summaryTokens}t</span>
+                </div>
+                <div class="bucket-preview">${b.summary.slice(0, 50).replace(/\n/g, ' ')}...</div>
             </div>
-            <div class="bucket-text">${b.summary.slice(0, 60)}...</div>
+            <div class="bucket-full-text" style="display: none;">${b.summary}</div>
         `;
-        div.title = b.summary; // Simple tooltip
+        
+        div.querySelector('.bucket-header').addEventListener('click', () => {
+            const fullText = div.querySelector('.bucket-full-text');
+            const icon = div.querySelector('.expand-icon');
+            const isHidden = fullText.style.display === 'none';
+            
+            fullText.style.display = isHidden ? 'block' : 'none';
+            icon.style.transform = isHidden ? 'rotate(90deg)' : 'rotate(0deg)';
+            div.classList.toggle('expanded', isHidden);
+        });
+
         list.appendChild(div);
     });
 }
