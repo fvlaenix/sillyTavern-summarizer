@@ -12,8 +12,8 @@ if [ ! -d "$ST_REPO/.git" ]; then
     exit 1
 fi
 
-if [ ! -d "$HBS_REPO/extensions/hbs" ]; then
-    echo "HBS extension not found at $HBS_REPO/extensions/hbs" >&2
+if [ ! -f "$HBS_REPO/manifest.json" ]; then
+    echo "HBS extension manifest not found at $HBS_REPO/manifest.json" >&2
     exit 1
 fi
 
@@ -39,7 +39,8 @@ npm install --no-save jest-environment-jsdom yaml
 
 echo "Syncing HBS extension"
 rm -rf "$ST_REPO/public/scripts/extensions/third-party/hbs"
-cp -R "$HBS_REPO/extensions/hbs" "$ST_REPO/public/scripts/extensions/third-party/hbs"
+mkdir -p "$ST_REPO/public/scripts/extensions/third-party/hbs"
+cp "$HBS_REPO/index.js" "$HBS_REPO/manifest.json" "$HBS_REPO/style.css" "$HBS_REPO/bucket-manager.js" "$ST_REPO/public/scripts/extensions/third-party/hbs/"
 
 echo "Syncing HBS tests"
 rm -rf "$ST_REPO/tests/hbs"
