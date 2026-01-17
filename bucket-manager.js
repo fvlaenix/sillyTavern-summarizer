@@ -134,27 +134,44 @@ export async function callSummarize(mode, text, maxWords, meta = {}, profileId =
         debugLog(`[HBS] Calling summarize: mode=${mode}, profile=${profileId}, maxWords=${maxWords}`);
         debugLog(`[HBS] PAYLOAD (Messages):`, JSON.stringify(messages, null, 2));
 
+        let useRawResponse = false;
+        if (context.ConnectionManagerRequestService?.getProfile && context.CONNECT_API_MAP) {
+            try {
+                const profile = context.ConnectionManagerRequestService.getProfile(profileId);
+                const apiMap = context.CONNECT_API_MAP?.[profile?.api];
+                useRawResponse = apiMap?.selected === 'textgenerationwebui' && apiMap?.type === 'openrouter';
+            } catch (error) {
+                debugLog('[HBS] Failed to resolve profile info for summarization:', error);
+            }
+        }
+
         const result = await context.ConnectionManagerRequestService.sendRequest(
             profileId,
             messages,
             256,
             {
                 stream: false,
-                extractData: true,
+                extractData: !useRawResponse,
                 includePreset: true,
                 includeInstruct: false,
             }
         );
 
-        if (!result || !result.content) {
+        const extractedContent = useRawResponse && context.extractMessageFromData && result
+            ? context.extractMessageFromData(result, 'textgenerationwebui')
+            : result?.content;
+
+        if (!extractedContent) {
             throw new Error('Empty response from Connection Manager');
         }
 
-        debugLog(`Summarization successful. Result length: ${result.content.length}`);
-        debugLog(`[HBS] RESPONSE (Content):`, result.content);
+        const summaryText = extractedContent.trim();
+
+        debugLog(`Summarization successful. Result length: ${summaryText.length}`);
+        debugLog(`[HBS] RESPONSE (Content):`, summaryText);
 
         return {
-            text: result.content.trim(),
+            text: summaryText,
             tokens: 0,
             usage: null,
         };

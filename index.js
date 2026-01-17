@@ -90,11 +90,29 @@ async function updateProfileStatus() {
 function setupProfileDropdown() {
     const settings = getSettings();
     const context = getContext();
+    let selectedProfileId = settings.selectedProfileId;
+
+    if (!selectedProfileId) {
+        const cmSelectedProfileId = context.extensionSettings?.connectionManager?.selectedProfile;
+        if (cmSelectedProfileId) {
+            try {
+                const profile = context.ConnectionManagerRequestService.getProfile(cmSelectedProfileId);
+                const isSupported = context.ConnectionManagerRequestService.isProfileSupported?.(profile) ?? true;
+                if (isSupported) {
+                    selectedProfileId = cmSelectedProfileId;
+                    settings.selectedProfileId = cmSelectedProfileId;
+                    saveSettingsDebounced();
+                }
+            } catch (error) {
+                debugLog('Failed to auto-select Connection Manager profile:', error);
+            }
+        }
+    }
 
     try {
         context.ConnectionManagerRequestService.handleDropdown(
             '#hbs_profile_select',
-            settings.selectedProfileId,
+            selectedProfileId,
             async (profile) => {
                 if (profile) {
                     settings.selectedProfileId = profile.id;
